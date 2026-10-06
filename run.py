@@ -12,7 +12,9 @@ import sys
 import requests
 
 from agent.llm import ClaudeLLM, OfflinePolicy, OpenAICompatLLM
-from agent.loop import Agent
+from agent.loop import Agent, SYSTEM
+from agent.memory import build_system, load_company, load_lessons, record_run
+from agent.policy import Policy
 from agent.tools import Toolbox
 from mock_server import serve
 
@@ -50,20 +52,28 @@ def main():
 
     llm = make_llm(a.offline)
 
-    def approve(name, args):
-        if a.auto_approve:
+    def approve(name, args, verdict="approve", reason=""):
+        if a.auto_approve and verdict != "approve_high":  # high-risk always needs a human
             print(f"    (auto-approved {name})")
             return True
-        return input(f"\n  APPROVE {name} {json.dumps(args)}? [y/N] ").strip().lower() == "y"
+        why = f"  [HIGH RISK: {reason}]" if reason else ""
+        return input(f"\n  APPROVE {name} {json.dumps(args)}?{why} [y/N] ").strip().lower() == "y"
 
     def ask(q):
         return input(f"\n  AGENT ASKS: {q}\n  > ")
 
-    agent = Agent(llm, Toolbox(base), approve, ask)
+    company = load_company()
+    lessons = load_lessons()
+    if lessons:
+        print(f"(loaded {len(lessons)} lesson(s) from past runs)\n")
+    agent = Agent(llm, Toolbox(base), approve, ask, policy=Policy(company.get("policy", {})),
+                  system=build_system(SYSTEM, company, lessons))
     print(f"TASK: {a.task}\n")
     out = agent.run(a.task)
+    log_path = record_run(a.task, out, agent.trace)
     print("\n=== RESULT ===")
     print(json.dumps(out, indent=2))
+    print(f"\n(audit log: {log_path})")
     print("\n=== Ground truth in internal system ===")
     print(requests.get(base + "/internal/bills").text)
     sys.exit(0 if out.get("success") else 1)

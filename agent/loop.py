@@ -24,9 +24,11 @@ MAX_IDENTICAL_FAILS = 3
 
 
 class Agent:
-    def __init__(self, llm, tools: Toolbox, approve, ask, log=print):
+    def __init__(self, llm, tools: Toolbox, approve, ask, log=print, policy=None, system=SYSTEM):
         self.llm, self.tools, self.approve, self.ask, self.log = llm, tools, approve, ask, log
+        self.policy, self.system = policy, system
         self.trace = []
+        self._approved = set()  # identical retried writes don't re-prompt the human
 
     def run(self, task: str) -> dict:
         messages = [{"role": "user", "content": task}]
@@ -36,7 +38,7 @@ class Agent:
         fail_counts: dict[str, int] = {}
 
         for step in range(1, MAX_STEPS + 1):
-            blocks = self.llm.next_step(SYSTEM, messages, self.tools.SCHEMAS)
+            blocks = self.llm.next_step(self.system, messages, self.tools.SCHEMAS)
             messages.append({"role": "assistant", "content": blocks})
             for b in blocks:
                 if b["type"] == "text" and b["text"].strip():
@@ -52,6 +54,7 @@ class Agent:
                 name, args = u["name"], u["input"]
                 self.log(f"[{step}] {name} {json.dumps(args)[:200]}")
                 sig = name + json.dumps(args, sort_keys=True)
+                decision = "n/a"
 
                 if name == "finish":
                     problem = self._finish_guard(args, wrote_ok_at, verified_after, last_write_failed)
@@ -64,16 +67,30 @@ class Agent:
                 elif name == "ask_user":
                     answer = self.ask(args.get("question", ""))
                     res = {"ok": True, "answer": answer}
-                elif name in Toolbox.mutating and not self.approve(name, args):
-                    res = {"ok": False, "error": "human denied this action; ask what to do instead of retrying"}
                 else:
-                    res = self.tools.run(name, args)
-                    if name in Toolbox.mutating:
-                        last_write_failed = not res.get("ok")
-                        if res.get("ok"):
-                            wrote_ok_at, verified_after = step, False
-                    elif name == "http_get" and wrote_ok_at is not None and res.get("ok"):
-                        verified_after = True
+                    verdict, reason = ("approve", "")
+                    if name in Toolbox.mutating and self.policy:
+                        verdict, reason = self.policy.check(name, args)
+                    if verdict == "deny":
+                        decision = "denied-by-policy"
+                        last_write_failed = True
+                        self.log(f"    policy: BLOCKED - {reason}")
+                        res = {"ok": False, "error": f"blocked by company policy: {reason}. Do not retry; ask the user or choose a permitted action."}
+                    elif name in Toolbox.mutating and sig not in self._approved and not self.approve(name, args, verdict, reason):
+                        decision = "human-denied"
+                        last_write_failed = True
+                        res = {"ok": False, "error": "human denied this action; ask what to do instead of retrying"}
+                    else:
+                        if name in Toolbox.mutating:
+                            self._approved.add(sig)
+                            decision = "approved"
+                        res = self.tools.run(name, args)
+                        if name in Toolbox.mutating:
+                            last_write_failed = not res.get("ok")
+                            if res.get("ok"):
+                                wrote_ok_at, verified_after = step, False
+                        elif name == "http_get" and wrote_ok_at is not None and res.get("ok"):
+                            verified_after = True
 
                 if not res.get("ok") and name != "finish":
                     fail_counts[sig] = fail_counts.get(sig, 0) + 1
@@ -82,7 +99,7 @@ class Agent:
                     if res.get("retryable"):
                         time.sleep(0.3)  # tiny backoff
                 self.log(f"    -> {json.dumps(res)[:300]}")
-                self.trace.append({"step": step, "tool": name, "args": args, "result": res})
+                self.trace.append({"ts": time.strftime("%H:%M:%S"), "step": step, "tool": name, "args": args, "decision": decision, "result": res})
                 results.append({"type": "tool_result", "tool_use_id": u["id"], "content": json.dumps(res)})
 
             messages.append({"role": "user", "content": results})

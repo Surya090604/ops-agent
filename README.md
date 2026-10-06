@@ -10,7 +10,7 @@ python run.py "Find the latest invoice from Acme, extract the amount and due dat
 ## Setup
 ```
 pip install requests
-export GEMINI_API_KEY=...                   # free key: https://aistudio.google.com/apikey  (default model gemini-3.8-flash)
+export GEMINI_API_KEY=...                   # PowerShell: $env:GEMINI_API_KEY="..."   | free key: https://aistudio.google.com/apikey  (default model gemini-3.8-flash)
 python run.py "<task>"                      # prompts you to approve each write
 python run.py --auto-approve "<task>"       # skip approval prompts
 python run.py --offline --auto-approve "<task>"   # no key: rule-based stand-in, harness demo only
@@ -42,12 +42,21 @@ The model chooses every action; the loop owns safety and reliability.
 - **Working memory** via `remember`, plus the full message history.
 - **Plain HTTP tools instead of a browser** to keep the prototype narrow but genuinely working. A browser tool would slot in as another entry in `Toolbox`.
 
+## Extensions toward a company-operator runtime (Founding Engineer brief)
+- **Company context** (`company.json`): systems, procedures and policy are data, not code. They are injected into the prompt, so pointing the agent at another workflow means editing this file, not the loop.
+- **Policy engine** (`agent/policy.py`): enforced in code outside the model. Writes to non-allowed paths are blocked; amounts above a threshold need a human even with `--auto-approve`. Identical retried writes aren't re-prompted.
+- **Audit trail**: every step (timestamp, tool, args, policy decision, result) is written to `logs/run-<ts>.jsonl`.
+- **Learning from outcomes** (`agent/memory.py`): failures hit in a run (e.g. a 422 and its error text) are distilled into `memory/learnings.jsonl` and injected into later runs' prompts.
+- **Tests**: `python -m unittest tests.test_agent` covers policy, approval/denial, the verification guard and lesson extraction (offline, no API key needed).
+- A denied or blocked write counts as a failed write, so the agent cannot report success after one.
+
 ## Known limitations
 - Only HTTP tools; no real browser/computer use (no JS rendering, clicking, screenshots).
-- `OfflinePolicy` is a scripted stand-in that only knows the invoice flow; it exists to test the harness without an API key. It is **not** the autonomous agent. The Claude-driven path is the real one, and I have not yet run it end-to-end in this build (no API key in the build environment), so expect to tune the prompt.
+- `OfflinePolicy` is a scripted stand-in that only knows the invoice flow; it exists to test the harness without an API key. It is **not** the autonomous agent. The real agent is LLM-driven (Gemini by default, via its OpenAI-compatible API).
+- Free-tier models can be slow (thinking latency) or rate-limited; the client retries on timeouts, 429s and 5xx, and asks Gemini for low reasoning effort (`OPS_AGENT_REASONING`).
 - Verification compares nothing automatically: the model reads back and judges. No programmatic diff against source data.
 - No persistent memory across runs, no cost/token tracking, single task at a time, no auth handling.
-- Approval is per-call on any POST; there is no policy on risk level.
+- Policy is a simple allow-list plus one amount threshold; no per-user roles, no scheduler/queue, and learnings are a flat list (no ranking or relevance retrieval).
 
 ## What I'd build next
 1. Playwright browser tool + screenshot/DOM observations.

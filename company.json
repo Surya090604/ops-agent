@@ -1,0 +1,14 @@
+{
+  "company": "Demo Corp",
+  "systems": {
+    "vendor_portal": {"base": "/vendor/", "description": "Read-only portal listing each vendor's invoices (HTML tables). Dates look like 'Nov 14, 2026'; amounts like '$1,200.00'."},
+    "billing": {"base": "/internal/bills", "description": "Internal billing system of record. GET lists recorded bills; POST records one (vendor, invoice_no, amount, due_date)."}
+  },
+  "procedures": {
+    "invoice_entry": "Pick the invoice with the most recent ISSUE date (list order is not reliable). Enter vendor, invoice_no, amount as a plain number, due_date as YYYY-MM-DD into billing. Then read billing back and compare with the portal before finishing."
+  },
+  "policy": {
+    "post_allowed_prefixes": ["/internal/bills"],
+    "approval_required_over_amount": 10000
+  }
+}
